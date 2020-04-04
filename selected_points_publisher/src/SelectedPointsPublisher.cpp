@@ -9,7 +9,6 @@
 #include "rviz/view_controller.h"
 #include "OGRE/OgreCamera.h"
 
-
 #include "selected_points_publisher/SelectedPointsPublisher.h"
 
 #include <ros/ros.h>
@@ -24,8 +23,6 @@
 
 #include <pcl/filters/passthrough.h>
 #include <pcl/common/common.h>
-
-/* #include <pcl/filters/impl/box_clipper3D.hpp> */
 
 #include <visualization_msgs/Marker.h>
 
@@ -45,9 +42,9 @@ SelectedPointsPublisher::~SelectedPointsPublisher()
 
 void SelectedPointsPublisher::updateTopic()
 {
-    nh_.param("frame_id", tf_frame_, std::string("/base_link"));
+    nh_.param("frame_id", tf_frame_, std::string("/velodyne_points"));
     std::string cloud_topic;
-    nh_.param("source_cloud_topic", cloud_topic, std::string("/velodyne_points"));
+    nh_.param("source_cloud_topic", cloud_topic, std::string("/points_raw"));
 
     rviz_cloud_topic_ = std::string("/rviz_selected_points");
     real_cloud_topic_ = std::string("/real_selected_points");
@@ -76,7 +73,7 @@ void SelectedPointsPublisher::PointCloudsCallback(const sensor_msgs::PointCloud2
     // We only publish a message with the reception of the original pc (maybe we also do not need to copy the received pc, because is what we published!)
     if(this->accumulated_segment_pc_->points.size() == 0)
     {
-        ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher::PointCloudsCallback", "Received PC");
+        ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.PointCloudsCallback", "Received PC");
     }
     // Convert ROS PC message into a pcl point cloud
     pcl::fromROSMsg(*pc_msg, *this->current_pc_);
@@ -84,95 +81,95 @@ void SelectedPointsPublisher::PointCloudsCallback(const sensor_msgs::PointCloud2
 
 int SelectedPointsPublisher::processKeyEvent( QKeyEvent* event, rviz::RenderPanel* panel )
 {
-        if(event->type() == QKeyEvent::KeyPress)
+    if(event->key() == Qt::Key_C)
+    {
+        ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent", "Cleaning ALL previous selection (selected area and points).");
+        rviz::SelectionManager* sel_manager = context_->getSelectionManager();
+        rviz::M_Picked selection = sel_manager->getSelection();
+        sel_manager->removeSelection(selection);
+        visualization_msgs::Marker marker;
+        // Set the frame ID and timestamp.  See the TF tutorials for information on these.
+        marker.header.frame_id = this->current_pc_->header.frame_id;
+        marker.header.stamp = ros::Time::now();
+        marker.ns = "basic_shapes";
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::CUBE;
+        marker.action = visualization_msgs::Marker::DELETE;
+        marker.lifetime = ros::Duration();
+
+        selected_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        accumulated_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        bb_marker_pub_.publish(marker);
+    }
+    else if(event->key() == Qt::Key_R)
+    {
+        ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent", "Reusing the LAST selected area to find a NEW bounding box.");
+        this->_processSelectedAreaAndFindPoints();
+    }
+    else if(event->key() == Qt::Key_Y)
+    {
+        this->_publishAccumulatedPoints();
+    }
+    else if(event->key() == Qt::Key_Plus)
+    {
+        ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent",
+                               "Adding the points to the accumulated point cloud. Removing them from the original point cloud. Clearing the LAST selected area.");
+        rviz::SelectionManager* sel_manager = context_->getSelectionManager();
+        rviz::M_Picked selection = sel_manager->getSelection();
+        sel_manager->removeSelection(selection);
+        visualization_msgs::Marker marker;
+        // Set the frame ID and timestamp.  See the TF tutorials for information on these.
+        marker.header.frame_id = this->current_pc_->header.frame_id;
+        marker.header.stamp = ros::Time::now();
+        marker.ns = "basic_shapes";
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::CUBE;
+        marker.action = visualization_msgs::Marker::DELETE;
+        marker.lifetime = ros::Duration();
+        bb_marker_pub_.publish(marker);
+
+        // First remove the selected point of the original point cloud so that they cannot be selected again:
+        pcl::PointCloud<pcl::PointXYZ> temp_new_pc;
+        extract_indices_filter_->setKeepOrganized(true);
+        extract_indices_filter_->setNegative(true);
+        temp_new_pc.header = this->current_pc_->header;
+        extract_indices_filter_->filter(temp_new_pc);
+        pcl::copyPointCloud(temp_new_pc, *this->current_pc_);
+
+        sensor_msgs::PointCloud2 partial_pc_ros;
+        pcl::toROSMsg(*this->current_pc_, partial_pc_ros);
+        partial_pc_pub_.publish(partial_pc_ros);
+
+        // Then I copy the that were selected before in the accumulated point cloud (except if it is the first selected segment, then I copy the whole dense point cloud)
+        if(this->accumulated_segment_pc_->points.size() == 0)
         {
-            if(event->key() == 'c' || event->key() == 'C')
+            pcl::copyPointCloud(*this->selected_segment_pc_, *this->accumulated_segment_pc_);
+            this->num_acc_points_ = this->num_selected_points_;
+            this->accumulated_segment_pc_->width = this->num_acc_points_;
+            this->accumulated_segment_pc_->height = 1;
+        }else{
+            //Both are dense organized point clouds and the points were selected_segment_pc_ has a not NaN value must be NaN in the accumulated_segment_pc_ (and viceversa)
+            for(unsigned int idx_selected = 0; idx_selected < this->selected_segment_pc_->points.size(); idx_selected++)
             {
-                ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher::processKeyEvent", "Cleaning ALL previous selection (selected area and points).");
-                rviz::SelectionManager* sel_manager = context_->getSelectionManager();
-                rviz::M_Picked selection = sel_manager->getSelection();
-                sel_manager->removeSelection(selection);
-                visualization_msgs::Marker marker;
-                // Set the frame ID and timestamp.  See the TF tutorials for information on these.
-                marker.header.frame_id = this->current_pc_->header.frame_id;
-                marker.header.stamp = ros::Time::now();
-                marker.ns = "basic_shapes";
-                marker.id = 0;
-                marker.type = visualization_msgs::Marker::CUBE;
-                marker.action = visualization_msgs::Marker::DELETE;
-                marker.lifetime = ros::Duration();
-
-                selected_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-                accumulated_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-                bb_marker_pub_.publish(marker);
-            }
-            else if(event->key() == 'r' || event->key() == 'R')
-            {
-                ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent", "Reusing the LAST selected area to find a NEW bounding box.");
-                this->_processSelectedAreaAndFindPoints();
-            }
-            else if(event->key() == 'y' || event->key() == 'Y')
-            {
-                this->_publishAccumulatedPoints();
-            }
-            else if(event->key() == '+' )
-            {
-                ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent",
-                                       "Adding the points to the accumulated point cloud. Removing them from the original point cloud. Clearing the LAST selected area.");
-                rviz::SelectionManager* sel_manager = context_->getSelectionManager();
-                rviz::M_Picked selection = sel_manager->getSelection();
-                sel_manager->removeSelection(selection);
-                visualization_msgs::Marker marker;
-                // Set the frame ID and timestamp.  See the TF tutorials for information on these.
-                marker.header.frame_id = this->current_pc_->header.frame_id;
-                marker.header.stamp = ros::Time::now();
-                marker.ns = "basic_shapes";
-                marker.id = 0;
-                marker.type = visualization_msgs::Marker::CUBE;
-                marker.action = visualization_msgs::Marker::DELETE;
-                marker.lifetime = ros::Duration();
-                bb_marker_pub_.publish(marker);
-
-                // First remove the selected point of the original point cloud so that they cannot be selected again:
-                pcl::PointCloud<pcl::PointXYZ> temp_new_pc;
-                extract_indices_filter_->setKeepOrganized(true);
-                extract_indices_filter_->setNegative(true);
-                temp_new_pc.header = this->current_pc_->header;
-                extract_indices_filter_->filter(temp_new_pc);
-                pcl::copyPointCloud(temp_new_pc, *this->current_pc_);
-
-                sensor_msgs::PointCloud2 partial_pc_ros;
-                pcl::toROSMsg(*this->current_pc_, partial_pc_ros);
-                partial_pc_pub_.publish(partial_pc_ros);
-
-                // Then I copy the that were selected before in the accumulated point cloud (except if it is the first selected segment, then I copy the whole dense point cloud)
-                if(this->accumulated_segment_pc_->points.size() == 0)
+                if(pcl::isFinite(this->selected_segment_pc_->points.at(idx_selected)))
                 {
-                    pcl::copyPointCloud(*this->selected_segment_pc_, *this->accumulated_segment_pc_);
-                    this->num_acc_points_ = this->num_selected_points_;
-                }else{
-                    //Both are dense organized point clouds and the points were selected_segment_pc_ has a not NaN value must be NaN in the accumulated_segment_pc_ (and viceversa)
-                    for(unsigned int idx_selected = 0; idx_selected < this->selected_segment_pc_->points.size(); idx_selected++)
-                    {
-                        if(pcl::isFinite(this->selected_segment_pc_->points.at(idx_selected)))
-                        {
-                            this->accumulated_segment_pc_->points.at(idx_selected) = this->selected_segment_pc_->points.at(idx_selected);
-                        }
-                    }
-
-                    this->num_acc_points_ += this->num_selected_points_;
+                    this->accumulated_segment_pc_->points.push_back(this->selected_segment_pc_->points.at(idx_selected));
                 }
-
-                selected_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
-                this->num_selected_points_ = 0;
-
-                ROS_INFO_STREAM_NAMED("SelectedPointsPublisher._processSelectedAreaAndFindPoints",
-                                      "Number of accumulated points (not published): "<< this->num_acc_points_);
-
-                ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent",
-                                       "Select a new area and press '+' again to accumulate more points, or press 'y' to publish the accumulated point cloud.");
             }
+
+            this->num_acc_points_ += this->num_selected_points_;
+            this->accumulated_segment_pc_->width = this->num_acc_points_;
         }
+
+        selected_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
+        this->num_selected_points_ = 0;
+
+        ROS_INFO_STREAM_NAMED("SelectedPointsPublisher.processKeyEvent",
+                              "Number of accumulated points (not published): "<< this->num_acc_points_);
+
+        ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent",
+                               "Select a new area and press '+' again to accumulate more points, or press 'y' to publish the accumulated point cloud.");
+    }
 }
 
 int SelectedPointsPublisher::processMouseEvent( rviz::ViewportMouseEvent& event )
@@ -196,7 +193,7 @@ int SelectedPointsPublisher::processMouseEvent( rviz::ViewportMouseEvent& event 
     {
         if( event.leftUp() )
         {
-            ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processKeyEvent", "Using selected area to find a new bounding box and publish the points inside of it");
+            ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher.processMouseEvent", "Using selected area to find a new bounding box and publish the points inside of it");
             this->_processSelectedAreaAndFindPoints();
         }
     }
@@ -208,7 +205,7 @@ int SelectedPointsPublisher::_processSelectedAreaAndFindPoints()
     rviz::SelectionManager* sel_manager = context_->getSelectionManager();
     rviz::M_Picked selection = sel_manager->getSelection();
     rviz::PropertyTreeModel *model = sel_manager->getPropertyModel();
-    int num_points = model->columnCount();
+    int num_points = model->rowCount();
     ROS_INFO_STREAM_NAMED( "SelectedPointsPublisher._processSelectedAreaAndFindPoints", "Number of points in the selected area: " << num_points);
 
     // Generate a ros point cloud message with the selected points in rviz
@@ -317,7 +314,6 @@ int SelectedPointsPublisher::_processSelectedAreaAndFindPoints()
 
     extract_indices_filter_.reset(new pcl::ExtractIndices<pcl::PointXYZ>());
     extract_indices_filter_->setIndices(inliers);
-    extract_indices_filter_->setKeepOrganized(true);
     extract_indices_filter_->setInputCloud(this->current_pc_);
     this->selected_segment_pc_->header = this->current_pc_->header;
     extract_indices_filter_->filter(*this->selected_segment_pc_);
@@ -363,14 +359,14 @@ int SelectedPointsPublisher::_processSelectedAreaAndFindPoints()
 
 int SelectedPointsPublisher::_publishAccumulatedPoints()
 {
-    ROS_INFO_STREAM_NAMED("SelectedPointsPublisher._processSelectedAreaAndFindPoints",
-                          "Publishing the accumulated point cloud (" << this->num_acc_points_ < " points)");
+    ROS_INFO_STREAM_NAMED("SelectedPointsPublisher._publishAccumulatedPoints",
+                          "Publishing the accumulated point cloud (" << this->num_acc_points_ << " points)");
     accumulated_segment_pc_->header = this->current_pc_->header;
     sensor_msgs::PointCloud2 accumulated_segment_ros;
     pcl::toROSMsg(*this->accumulated_segment_pc_, accumulated_segment_ros);
     real_selected_pub_.publish(accumulated_segment_ros);
 
-    ROS_WARN_STREAM_NAMED("SelectedPointsPublisher._processSelectedAreaAndFindPoints",
+    ROS_WARN_STREAM_NAMED("SelectedPointsPublisher._publishAccumulatedPoints",
                           "Cleaning the accumulated point cloud after publishing");
     accumulated_segment_pc_.reset(new pcl::PointCloud<pcl::PointXYZ>);
     this->num_acc_points_ = 0;

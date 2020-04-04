@@ -112,11 +112,11 @@ protected:
   std::string bb_marker_topic_;
   bool selecting_;
 
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr current_pc_;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr selected_segment_pc_;
-  pcl::PointCloud<pcl::PointXYZRGB>::Ptr accumulated_segment_pc_;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr current_pc_;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr selected_segment_pc_;
+  pcl::PointCloud<pcl::PointXYZ>::Ptr accumulated_segment_pc_;
 
-  pcl::ExtractIndices<pcl::PointXYZRGB>::Ptr extract_indices_filter_;
+  pcl::ExtractIndices<pcl::PointXYZ>::Ptr extract_indices_filter_;
 
   int num_acc_points_;
   int num_selected_points_;
